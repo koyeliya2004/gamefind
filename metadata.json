@@ -1,0 +1,6 @@
+{
+  "name": "Neon Arena 3D",
+  "description": "A real-time 3D multiplayer arena game built with Three.js and Firebase.",
+  "requestFramePermissions": [],
+  "majorCapabilities": []
+}

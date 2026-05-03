@@ -1,0 +1,35 @@
+{
+  "entities": {
+    "Player": {
+      "title": "Player",
+      "description": "Represents a player in the 3D world.",
+      "type": "object",
+      "properties": {
+        "uid": { "type": "string", "description": "User ID of the player." },
+        "name": { "type": "string", "description": "Display name." },
+        "color": { "type": "string", "description": "Player color (hex)." },
+        "position": {
+          "type": "object",
+          "properties": {
+            "x": { "type": "number" },
+            "y": { "type": "number" },
+            "z": { "type": "number" }
+          },
+          "required": ["x", "y", "z"]
+        },
+        "rotationY": { "type": "number", "description": "Rotation around Y axis." },
+        "health": { "type": "number", "description": "Current health points." },
+        "maxHealth": { "type": "number", "description": "Maximum health points." },
+        "lastSeen": { "type": "string", "format": "date-time", "description": "Server timestamp of last update." },
+        "isActive": { "type": "boolean", "description": "Whether the player is actively in the game." }
+      },
+      "required": ["uid", "name", "color", "position", "rotationY", "health", "maxHealth", "lastSeen", "isActive"]
+    }
+  },
+  "firestore": {
+    "players/{playerId}": {
+      "schema": "Player",
+      "description": "Active players in the game."
+    }
+  }
+}
