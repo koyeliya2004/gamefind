@@ -19,7 +19,7 @@ import {
   limit,
   where
 } from 'firebase/firestore';
-import { LucideGamepad2, LucideUsers, LucideZap, LucideChevronUp, LucideChevronDown, LucideChevronLeft, LucideChevronRight, LucideLogOut, LucideTarget, LucideBarChart3 } from 'lucide-react';
+import { LucideGamepad2, LucideUsers, LucideZap, LucideChevronUp, LucideChevronDown, LucideChevronLeft, LucideChevronRight, LucideLogOut, LucideTarget, LucideBarChart3, LucidePause, LucidePlay, LucidePlus, LucideMinus, LucideSettings } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import { clsx, type ClassValue } from 'clsx';
 import { twMerge } from 'tailwind-merge';
@@ -58,7 +58,7 @@ const WEAPONS: Record<WeaponClass, WeaponConfig> = {
     name: 'V-1 PULSE',
     type: WeaponClass.PULSE,
     damage: 35,
-    fireRate: 150,
+    fireRate: 80,
     spread: 0.05,
     count: 1,
     speed: 130,
@@ -92,6 +92,12 @@ const WEAPONS: Record<WeaponClass, WeaponConfig> = {
 enum AIState {
   PATROL,
   CHASE
+}
+
+enum GameStatus {
+  START = 'START',
+  PLAYING = 'PLAYING',
+  GAMEOVER = 'GAMEOVER'
 }
 
 enum CameraMode {
@@ -149,9 +155,42 @@ export default function App() {
   useEffect(() => {
     healthRef.current = health;
   }, [health]);
+  const [isPaused, setIsPaused] = useState(false);
+  const isPausedRef = useRef(false);
+  const [projectileSpeedMult, setProjectileSpeedMult] = useState(1.0);
+  const projectileSpeedMultRef = useRef(1.0);
+  
+  const [projectileColor, setProjectileColor] = useState('#22d3ee');
+  const projectileColorRef = useRef('#22d3ee');
+  const [npcColor, setNpcColor] = useState('#f43f5e');
+  const npcColorRef = useRef('#f43f5e');
+  const [showSettings, setShowSettings] = useState(false);
+
+  useEffect(() => {
+    isPausedRef.current = isPaused;
+  }, [isPaused]);
+
+  useEffect(() => {
+    projectileSpeedMultRef.current = projectileSpeedMult;
+  }, [projectileSpeedMult]);
+
+  useEffect(() => {
+    projectileColorRef.current = projectileColor;
+  }, [projectileColor]);
+
+  useEffect(() => {
+    npcColorRef.current = npcColor;
+  }, [npcColor]);
+
   const [isGameOver, setIsGameOver] = useState(false);
   const [activeWeapon, setActiveWeapon] = useState<WeaponClass>(WeaponClass.PULSE);
   const activeWeaponRef = useRef<WeaponClass>(WeaponClass.PULSE);
+  const [gameStatus, setGameStatus] = useState<GameStatus>(GameStatus.START);
+  const gameStatusRef = useRef<GameStatus>(GameStatus.START);
+  
+  useEffect(() => {
+    gameStatusRef.current = gameStatus;
+  }, [gameStatus]);
   const [cameraMode, setCameraMode] = useState<CameraMode>(CameraMode.FPS);
   const cameraModeRef = useRef<CameraMode>(CameraMode.FPS);
 
@@ -168,6 +207,7 @@ export default function App() {
   const containerRef = useRef<HTMLDivElement>(null);
   const keysRef = useRef<Record<string, boolean>>({});
   const mousePosRef = useRef<THREE.Vector2>(new THREE.Vector2());
+  const mouseButtonsRef = useRef<Record<number, boolean>>({});
   const raycasterRef = useRef<THREE.Raycaster>(new THREE.Raycaster());
   const groundPlaneRef = useRef<THREE.Plane>(new THREE.Plane(new THREE.Vector3(0, 1, 0), 0));
   const sceneRef = useRef<{
@@ -250,12 +290,28 @@ export default function App() {
 
     // 2. Physics Setup
     const world = new CANNON.World();
-    world.gravity.set(0, -60, 0); // Very strong gravity to prevent floatiness
+    world.gravity.set(0, -40, 0); 
+    
+    const groundMaterial = new CANNON.Material("groundMaterial");
+    const playerMaterial = new CANNON.Material("playerMaterial");
+    
+    const contactMaterial = new CANNON.ContactMaterial(
+      groundMaterial,
+      playerMaterial,
+      {
+        friction: 0.0,
+        restitution: 0.1,
+        contactEquationStiffness: 1e8,
+        contactEquationRelaxation: 3
+      }
+    );
+    world.addContactMaterial(contactMaterial);
 
     // Add solid ground collision
     const groundBody = new CANNON.Body({
       mass: 0,
       shape: new CANNON.Plane(),
+      material: groundMaterial
     });
     groundBody.quaternion.setFromEuler(-Math.PI / 2, 0, 0);
     world.addBody(groundBody);
@@ -269,13 +325,13 @@ export default function App() {
     scene.add(mainLight);
 
     // Add neon point lights across the arena
-    const neonColors = ['#3b82f6', '#f43f5e', '#8b5cf6', '#10b981'];
-    for (let i = 0; i < 6; i++) {
-        const pLight = new THREE.PointLight(neonColors[i % neonColors.length], 80, 50);
+    const neonColors = ['#00f2ff', '#f43f5e', '#8b5cf6', '#10b981'];
+    for (let i = 0; i < 15; i++) {
+        const pLight = new THREE.PointLight(neonColors[i % neonColors.length], 200, 100);
         pLight.position.set(
-            (Math.random() - 0.5) * ARENA_SIZE * 1.2,
-            5,
-            (Math.random() - 0.5) * ARENA_SIZE * 1.2
+            (Math.random() - 0.5) * ARENA_SIZE * 1.5,
+            12,
+            (Math.random() - 0.5) * ARENA_SIZE * 1.5
         );
         scene.add(pLight);
     }
@@ -332,15 +388,15 @@ export default function App() {
 
     // Add Monolithic Spires
     for (let i = 0; i < 150; i++) {
-        const h = 40 + Math.random() * 80;
-        const w = 10 + Math.random() * 20;
+        const h = 40 + Math.random() * 120;
+        const w = 12 + Math.random() * 25;
         const spireGeom = new THREE.BoxGeometry(w, h, w);
         const spireMat = new THREE.MeshStandardMaterial({ 
-            color: '#020617',
+            color: '#0f172a',
             emissive: i % 3 === 0 ? '#00f2ff' : (i % 3 === 1 ? '#f43f5e' : '#8b5cf6'),
-            emissiveIntensity: 0.8,
-            metalness: 1,
-            roughness: 0
+            emissiveIntensity: 1.5,
+            metalness: 0.8,
+            roughness: 0.1
         });
         const spire = new THREE.Mesh(spireGeom, spireMat);
         
@@ -350,7 +406,7 @@ export default function App() {
             (Math.random() - 0.5) * ARENA_SIZE * 1.9
         );
         
-        if (spire.position.length() > 30) {
+        if (spire.position.length() > 40) { // Keep center clear
             scene.add(spire);
             const spireBody = new CANNON.Body({
                 mass: 0,
@@ -373,9 +429,10 @@ export default function App() {
       mass: 80,
       shape: playerShape,
       position: new CANNON.Vec3((Math.random() - 0.5) * 10, 2, (Math.random() - 0.5) * 10),
-      linearDamping: 0.9,
-      angularDamping: 0.9,
-      fixedRotation: true
+      linearDamping: 0.95,
+      angularDamping: 0.95,
+      fixedRotation: true,
+      material: playerMaterial
     });
     playerBody.allowSleep = false;
     world.addBody(playerBody);
@@ -439,13 +496,21 @@ export default function App() {
     // 6. Input Management
     const handleKeyUp = (e: KeyboardEvent) => {
         keysRef.current[e.code] = false;
+        
+        if (e.code === 'KeyP') {
+          setIsPaused(prev => !prev);
+        }
     };
     const handleMouseMove = (e: MouseEvent) => {
         mousePosRef.current.x = (e.clientX / window.innerWidth) * 2 - 1;
         mousePosRef.current.y = -(e.clientY / window.innerHeight) * 2 + 1;
     };
     const handleMouseDown = (e: MouseEvent) => {
-        if (isJoined && !isGameOver && e.button === 0) fireProjectile();
+        mouseButtonsRef.current[e.button] = true;
+    };
+
+    const handleMouseUp = (e: MouseEvent) => {
+        mouseButtonsRef.current[e.button] = false;
     };
 
     const handleWheel = (e: WheelEvent) => {
@@ -468,6 +533,7 @@ export default function App() {
     window.addEventListener('keyup', handleKeyUp);
     window.addEventListener('mousemove', handleMouseMove);
     window.addEventListener('mousedown', handleMouseDown);
+    window.addEventListener('mouseup', handleMouseUp);
     window.addEventListener('wheel', handleWheel);
 
     // 8. NPC Initialization
@@ -490,8 +556,8 @@ export default function App() {
         const core = new THREE.Mesh(
             npcGeometry, 
             new THREE.MeshStandardMaterial({ 
-                color: '#f43f5e', 
-                emissive: '#f43f5e', 
+                color: npcColorRef.current, 
+                emissive: npcColorRef.current, 
                 emissiveIntensity: 2,
                 roughness: 0,
                 metalness: 1
@@ -534,17 +600,20 @@ export default function App() {
 
 
     const fireProjectile = () => {
+        if (isPausedRef.current) return;
         const now = Date.now();
         const weapon = WEAPONS[activeWeaponRef.current];
         if (now - lastShotRef.current < weapon.fireRate) return;
         lastShotRef.current = now;
 
         const aimDir = new THREE.Vector3();
-        sceneRef.current.camera.getWorldDirection(aimDir);
+        camera.getWorldDirection(aimDir);
 
         for (let i = 0; i < weapon.count; i++) {
-            const spreadX = (Math.random() - 0.5) * weapon.spread;
-            const spreadY = (Math.random() - 0.5) * weapon.spread;
+            // Ultra-tight spread for precision focus
+            const spreadFactor = 0.15;
+            const spreadX = (Math.random() - 0.5) * weapon.spread * spreadFactor;
+            const spreadY = (Math.random() - 0.5) * weapon.spread * spreadFactor;
             
             const right = new THREE.Vector3().crossVectors(new THREE.Vector3(0, 1, 0), aimDir).normalize();
             const up = new THREE.Vector3().crossVectors(aimDir, right).normalize();
@@ -563,7 +632,11 @@ export default function App() {
                     playerBody.position.y + (cameraModeRef.current === CameraMode.FPS ? 1.2 : 0) + finalDir.y * 2.5,
                     playerBody.position.z + finalDir.z * 2.5
                 ),
-                velocity: new CANNON.Vec3(finalDir.x * weapon.speed, finalDir.y * weapon.speed, finalDir.z * weapon.speed)
+                velocity: new CANNON.Vec3(
+                    finalDir.x * weapon.speed * projectileSpeedMultRef.current,
+                    finalDir.y * weapon.speed * projectileSpeedMultRef.current,
+                    finalDir.z * weapon.speed * projectileSpeedMultRef.current
+                )
             });
             world.addBody(projBody);
 
@@ -572,8 +645,8 @@ export default function App() {
                   ? new THREE.CylinderGeometry(0.3, 0.3, 6, 8)
                   : new THREE.SphereGeometry(weapon.type === WeaponClass.SPREAD ? 0.5 : 0.7, 12, 12),
                 new THREE.MeshStandardMaterial({ 
-                    color: weapon.color,
-                    emissive: weapon.color,
+                    color: projectileColorRef.current,
+                    emissive: projectileColorRef.current,
                     emissiveIntensity: 6
                 })
             );
@@ -582,6 +655,10 @@ export default function App() {
             }
             scene.add(projMesh);
             projectiles.push({ body: projBody, mesh: projMesh, createdAt: now });
+
+            // Recoil Effect
+            const cameraKick = weapon.recoil * 0.005;
+            camera.rotation.x += cameraKick;
 
             // Apply recoil to player (gentle horizontal recoil)
             const recoilForce = finalDir.clone().setY(0).multiplyScalar(-weapon.recoil * 50);
@@ -698,13 +775,25 @@ export default function App() {
 
     const animate = () => {
       animationFrameId = requestAnimationFrame(animate);
+      if (isPausedRef.current) return;
+      
       const delta = clock.getDelta();
       world.step(1/60, delta, 3);
 
       // Physics Move
       const keys = keysRef.current;
+      
+      // Stop movement if not in PLAYING state
+      if (gameStatusRef.current !== GameStatus.PLAYING) {
+        playerBody.velocity.set(0, 0, 0);
+        return; 
+      }
+      
       const isSprinting = keys['ShiftLeft'] || keys['ShiftRight'];
-      const MOVE_STRENGTH = isSprinting ? 120 : 80;
+      const currentCamMode = cameraModeRef.current;
+      const MOVE_STRENGTH = currentCamMode === CameraMode.FPS 
+        ? (isSprinting ? 100 : 60) 
+        : (isSprinting ? 80 : 50);
       
       const camDir = new THREE.Vector3();
       camera.getWorldDirection(camDir);
@@ -723,15 +812,20 @@ export default function App() {
 
       if (forceVec.length() > 0) {
         forceVec.normalize().multiplyScalar(MOVE_STRENGTH);
-        // More direct control for better response
-        const targetVelX = forceVec.x;
-        const targetVelZ = forceVec.z;
-        playerBody.velocity.x += (targetVelX - playerBody.velocity.x) * 0.3;
-        playerBody.velocity.z += (targetVelZ - playerBody.velocity.z) * 0.3;
+        // Direct velocity influence for high precision and responsiveness
+        // Increased lerpFactor for "immediate" feel without being "jaggy"
+        const lerpFactor = currentCamMode === CameraMode.FPS ? 0.6 : 0.4;
+        playerBody.velocity.x += (forceVec.x - playerBody.velocity.x) * lerpFactor;
+        playerBody.velocity.z += (forceVec.z - playerBody.velocity.z) * lerpFactor;
+      } else {
+        // Active braking for "precision steps"
+        const brakeFactor = 0.8;
+        playerBody.velocity.x *= brakeFactor;
+        playerBody.velocity.z *= brakeFactor;
       }
 
-      // Stronger downward force to keep grounded
-      playerBody.applyForce(new CANNON.Vec3(0, -100, 0), playerBody.position);
+      // Consistent downward force to avoid "jumping" when walking over small grid lines/edges
+      playerBody.applyForce(new CANNON.Vec3(0, -1500, 0), playerBody.position);
 
       // Aiming (Mouse Raycasting) - Only for TPS/Top-down or when needed
       if (cameraModeRef.current !== CameraMode.FPS) {
@@ -777,6 +871,11 @@ export default function App() {
       if (playerBody.position.y < -10) {
         playerBody.position.set(0, 5, 0);
         playerBody.velocity.set(0, 0, 0);
+      }
+
+      // Shooting (Left Click / Automatic)
+      if (mouseButtonsRef.current[0] && gameStatusRef.current === GameStatus.PLAYING) {
+        fireProjectile();
       }
 
       // Camera & Rotation logic
@@ -885,7 +984,7 @@ export default function App() {
           }
         });
 
-        const speed = npc.state === AIState.CHASE ? 22 : 12;
+        const speed = npc.state === AIState.CHASE ? 15 : 9;
         const steeringForce = new THREE.Vector3();
 
         // State Machine & Logic
@@ -1497,6 +1596,17 @@ export default function App() {
           {/* Camera & Settings Toggle */}
           <div className="absolute top-6 left-6 z-[60] flex gap-2">
             <button
+              onClick={() => {
+                if (gameStatus === GameStatus.PLAYING) {
+                  setIsPaused(prev => !prev);
+                }
+              }}
+              className={`group flex h-10 w-10 items-center justify-center rounded-xl border transition-all backdrop-blur-md ${isPaused ? 'bg-orange-500/20 border-orange-500/50' : 'bg-slate-900/80 border-white/10 hover:border-blue-500/50'}`}
+            >
+              {isPaused ? <LucidePlay className="h-4 w-4 text-orange-400" /> : <LucidePause className="h-4 w-4 text-slate-400" />}
+            </button>
+
+            <button
               onClick={() => setCameraMode(prev => prev === CameraMode.FPS ? CameraMode.TPS : CameraMode.FPS)}
               className="group flex items-center gap-2 rounded-xl border border-white/10 bg-slate-900/80 px-4 py-2 backdrop-blur-md transition-all hover:border-blue-500/50"
             >
@@ -1555,6 +1665,158 @@ export default function App() {
              </div>
           </div>
         </>
+      )}
+      {/* Home Page / Start Screen */}
+      {gameStatus === GameStatus.START && (
+        <div className="absolute inset-0 z-[100] flex items-center justify-center bg-slate-950">
+          <div className="relative max-w-2xl w-full p-8 text-center">
+            <div className="absolute inset-0 -z-10 bg-[radial-gradient(circle_at_center,_var(--tw-gradient-stops))] from-blue-600/20 via-transparent to-transparent blur-3xl" />
+            
+            <div className="space-y-6">
+              <div className="space-y-2">
+                <div className="inline-block px-3 py-1 rounded-full bg-blue-500/10 border border-blue-500/20 text-blue-400 text-[10px] font-mono tracking-[0.3em] uppercase">SYSTEM_BOOT_REQUEST</div>
+                <h1 className="text-8xl font-black tracking-tighter text-white">
+                  CYBER<span className="text-blue-500">STRIKE</span>
+                </h1>
+                <p className="text-slate-500 text-sm font-mono tracking-widest uppercase">Experimental High-Speed Combat Arena</p>
+              </div>
+
+              <div className="py-12 grid grid-cols-3 gap-6">
+                <div className="space-y-2 group">
+                  <div className="h-1 bg-slate-800 rounded-full overflow-hidden">
+                    <div className="h-full w-full bg-blue-500" />
+                  </div>
+                  <p className="text-[10px] font-bold text-slate-400 font-mono tracking-widest uppercase">Neural Link</p>
+                  <p className="text-xs text-slate-600">FPS / TPS Adaptive</p>
+                </div>
+                <div className="space-y-2 group">
+                  <div className="h-1 bg-slate-800 rounded-full overflow-hidden">
+                    <div className="h-full w-full bg-cyan-500" />
+                  </div>
+                  <p className="text-[10px] font-bold text-slate-400 font-mono tracking-widest uppercase">Arena Load</p>
+                  <p className="text-xs text-slate-600">250m Sector Alpha</p>
+                </div>
+                <div className="space-y-2 group">
+                  <div className="h-1 bg-slate-800 rounded-full overflow-hidden">
+                    <div className="h-full w-full bg-blue-500" />
+                  </div>
+                  <p className="text-[10px] font-bold text-slate-400 font-mono tracking-widest uppercase">Weaponry</p>
+                  <p className="text-xs text-slate-600">V-1 Pulse Array</p>
+                </div>
+              </div>
+
+              <div className="flex flex-col items-center gap-4 pt-8">
+                <button 
+                  onClick={() => {
+                    // Update NPC materials if they were already created
+                    if (sceneRef.current) {
+                      sceneRef.current.npcs.forEach(npc => {
+                        const body = npc.mesh.children[0] as THREE.Mesh;
+                        if (body && body.material instanceof THREE.MeshStandardMaterial) {
+                          body.material.color.set(npcColor);
+                          body.material.emissive.set(npcColor);
+                        }
+                      });
+                    }
+                    setGameStatus(GameStatus.PLAYING);
+                    setCameraMode(CameraMode.FPS);
+                    setIsJoined(true);
+                  }}
+                  className="px-12 py-5 bg-blue-600 hover:bg-blue-500 text-white font-black rounded-lg transition-all active:scale-95 shadow-[0_0_50px_rgba(37,99,235,0.3)] ring-1 ring-blue-400/30"
+                >
+                  INITIALIZE COMBAT SIMULATION
+                </button>
+                
+                <button 
+                  onClick={() => setShowSettings(!showSettings)}
+                  className="text-[10px] font-bold text-slate-400 hover:text-white font-mono uppercase tracking-widest transition-colors flex items-center gap-2"
+                >
+                  <LucideSettings className="h-3 w-3" />
+                  Configure_Simulation_Parameters
+                </button>
+
+                {showSettings && (
+                  <motion.div 
+                    initial={{ opacity: 0, y: 10 }}
+                    animate={{ opacity: 1, y: 0 }}
+                    className="w-full max-w-sm mt-4 p-6 rounded-2xl bg-slate-900/50 border border-white/5 backdrop-blur-xl text-left space-y-6"
+                  >
+                    <div className="space-y-4">
+                      <div className="flex items-center justify-between">
+                        <span className="text-[10px] font-black uppercase text-slate-500">Projectile Speed</span>
+                        <span className="text-[10px] font-mono text-blue-400">{Math.round(projectileSpeedMult * 100)}%</span>
+                      </div>
+                      <input 
+                        type="range" min="0.5" max="2.0" step="0.1"
+                        value={projectileSpeedMult}
+                        onChange={(e) => setProjectileSpeedMult(parseFloat(e.target.value))}
+                        className="w-full h-1 bg-slate-800 rounded-full appearance-none cursor-pointer accent-blue-500"
+                      />
+                    </div>
+
+                    <div className="grid grid-cols-2 gap-4">
+                      <div className="space-y-3">
+                        <span className="text-[10px] font-black uppercase text-slate-500 block">Pulse Color</span>
+                        <div className="flex gap-2">
+                          {['#22d3ee', '#f43f5e', '#8b5cf6', '#10b981'].map(c => (
+                            <button 
+                              key={c}
+                              onClick={() => setProjectileColor(c)}
+                              className={`h-6 w-6 rounded-full border-2 transition-transform ${projectileColor === c ? 'border-white scale-110' : 'border-transparent'}`}
+                              style={{ backgroundColor: c }}
+                            />
+                          ))}
+                        </div>
+                      </div>
+                      <div className="space-y-3">
+                        <span className="text-[10px] font-black uppercase text-slate-500 block">Enemy Aura</span>
+                        <div className="flex gap-2">
+                          {['#f43f5e', '#ef4444', '#f97316', '#a855f7'].map(c => (
+                            <button 
+                              key={c}
+                              onClick={() => setNpcColor(c)}
+                              className={`h-6 w-6 rounded-full border-2 transition-transform ${npcColor === c ? 'border-white scale-110' : 'border-transparent'}`}
+                              style={{ backgroundColor: c }}
+                            />
+                          ))}
+                        </div>
+                      </div>
+                    </div>
+                  </motion.div>
+                )}
+
+                <p className="text-[10px] font-bold text-slate-600 font-mono uppercase tracking-widest pt-4">Authorized_Entity_Detected // {playerName || 'SURAJIT.MOON'}</p>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Crosshair (FPS Only) */}
+      {cameraMode === CameraMode.FPS && gameStatus === GameStatus.PLAYING && (
+        <div className="pointer-events-none absolute left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 z-[60]">
+          <div className="relative h-10 w-10">
+            <div className="absolute left-1/2 h-full w-[1px] -translate-x-1/2 bg-cyan-400/50" />
+            <div className="absolute top-1/2 h-[1px] w-full -translate-y-1/2 bg-cyan-400/50" />
+            <div className="absolute inset-2 border border-cyan-400/30 rounded-full" />
+            <div className="absolute left-1/2 top-1/2 h-1 w-1 -translate-x-1/2 -translate-y-1/2 rounded-full bg-cyan-400 shadow-[0_0_10px_#22d3ee]" />
+          </div>
+        </div>
+      )}
+      {/* Pause Overlay */}
+      {isPaused && gameStatus === GameStatus.PLAYING && (
+        <div className="absolute inset-0 z-[80] flex items-center justify-center bg-slate-950/40 backdrop-blur-sm">
+           <div className="text-center space-y-4">
+              <div className="inline-block px-3 py-1 rounded-full bg-orange-500/10 border border-orange-500/20 text-orange-400 text-[10px] font-mono tracking-[0.3em] uppercase animate-pulse">SYSTEM_PAUSED</div>
+              <h2 className="text-6xl font-black text-white tracking-tighter">SIMULATION HALTED</h2>
+              <button 
+                onClick={() => setIsPaused(false)}
+                className="px-8 py-3 bg-white text-black font-black rounded-lg hover:scale-105 transition-transform"
+              >
+                RESUME LINK
+              </button>
+           </div>
+        </div>
       )}
     </main>
   );
